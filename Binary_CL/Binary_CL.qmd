@@ -1,0 +1,158 @@
+---
+title: "EJEMPLOS DE CLASIFICACIÓN BINARIA"
+author: "Fernando Alonso Velez"
+date: "`r Sys.Date()`"
+#output: pdf_document
+format:
+  html:
+    max-width: 2600px
+    font-size: 60%
+    theme: sandstone
+    toc: true
+    toc-title: Contenido
+    toc-location: left
+    number-sections: true
+    html-math-method: katex
+    repo: https://github.com/fvelez78/MLearning.git
+#format: revealjs
+#editor: visual
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Ruta_Datos='../Fuentes/'
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(forcats)
+library(caret)  # Para la validación cruzada y evaluación del modelo
+library(broom)  # Para tidy output
+library(leaps)
+library(lubridate)
+library(pROC)
+library(flextable)
+```
+
+## **Fuente de Datos**
+
+Los siguientes datos provienen de la prevención de fraude en la industria aseguradora de Colombia. El archivo original (en Excel) contiene registros anonimizados y de casos reales de reclamaciones de polizas de seguros. El objetivo general es poder modelar la variable *OBJECIONES_COMPARABLES* en términos de las demas variables segun apliquen o no. Para efectos de estos ejemplos no se detallan las razones de la depuracion de variables en profundidad.
+
+```{r echo=FALSE, warning=FALSE}
+DT1=read_excel(paste0(Ruta_Datos,'Insumo modelo.xlsx'),sheet='Datos 1')
+DT2=read_excel(paste0(Ruta_Datos,'Insumo modelo.xlsx'),sheet='Datos 2')
+colnames(DT2)[1]='ID'
+DT0=DT1%>%left_join(DT2,by='ID')
+#head(DT0)
+```
+
+Para el desarrollo de modelo se omiten las variables de fecha, así como algunas variables que luego de un análisis descriptivo presentan poca asociación con la variable objetivo (ID, MUNICIPIO, CONTEO_OBJ_VIC, EDAD_VICTIMA, OBJECIONES_CAT) o resultan redundantes generando problemas de colinealidad entre las variables predictoras. Por otra parte, se opto por trabajar con la región en lugar del departamento.
+
+```{r echo=FALSE, warning=FALSE}
+DT=DT0%>%select(where(~ !inherits(., "POSIXct")))
+DT = DT%>%mutate(across(where(is.character), as.factor))
+DT$ID_CONDICION=as.factor(DT$ID_CONDICION)
+DT$ID_TIPO_VEHICULO=as.factor(DT$ID_TIPO_VEHICULO)
+DT$PERTENECE_LISTA=as.factor(DT$PERTENECE_LISTA)
+DT$ID_COMPANIA_ASEGURADORA=as.factor(DT$ID_COMPANIA_ASEGURADORA)
+# Revision de la distribucion porcentual de las variables categoricas
+Dist_Var_Factor=data.frame(Variable=character(),Nivel=character(),Prc=numeric())
+for(i in 1:ncol(DT)){
+  if(is.factor(DT[,i,drop = FALSE][[1]])){
+    T_prc=as.data.frame(round(prop.table(table(DT[,i]))*100,3))
+    Dist_Var_Factor=rbind(Dist_Var_Factor,cbind(rep(colnames(DT)[i],nrow(T_prc)),T_prc))
+  }
+}
+
+DT_f=DT%>%select(-c(ID,MUNICIPIO, CONTEO_OBJ_VIC,EDAD_VICTIMA,OBJECIONES_CAT))%>%na.omit()
+
+```
+
+Finalmente se seleccionan las siguientes variables:
+
+|                         |                          |
+|-------------------------|--------------------------|
+| REGION                  | ID_TIPO_VEHICULO         |
+| ID_COMPANIA_ASEGURADORA | ID_CONDICION             |
+| INGRESO_FOSYGA          | SEGURIDAD_SOCIAL         |
+| CONTEO_OBJ_VIC_CAT      | CONTEO_OBJ_PLACA_CAT     |
+| CONTEO_OBJ_POLIZA_CAT   | PERTENECE_LISTA          |
+| RETARDO_CAT             | IGUALDAD_COND_TOM        |
+| NUM_VECES_PLACA         |  OBJECIONES_COMPARABLES  |
+
+| 
+| 
+
+## **Modelamiento**
+
+Modelar variables binarias es una necesidad muy frecuente y existen varias técnicas posibles para lograr tal fin, algunas de las cuales (las mas importantes) se presentan a continuación.
+
+### **Regresión Logística**
+
+Caso particular de los modelos lineales generalizados esta el caso de la regresión logística.
+
+```{r}
+M_Prueba = glm(OBJECIONES_COMPARABLES ~ REGION+
+               ID_TIPO_VEHICULO+ID_COMPANIA_ASEGURADORA+ID_CONDICION+
+               INGRESO_FOSYGA+SEGURIDAD_SOCIAL+CONTEO_OBJ_VIC_CAT+
+               CONTEO_OBJ_PLACA_CAT+CONTEO_OBJ_POLIZA_CAT+PERTENECE_LISTA+
+               RETARDO_CAT+IGUALDAD_COND_TOM+NUM_VECES_PLACA+VIGENCIA, 
+               data = DT_f, family = "binomial")
+
+```
+
+Una vez seleccionado un modelo plausible, se realiza el entrenamiento usando validación cruzada de k plieges (k-fold).
+
+```{r}
+
+# Definir el control para la validación cruzada k-fold
+set.seed(448623)
+control = trainControl(method = "cv", number = 5)  # k-fold con k=5
+M1 = train(OBJECIONES_COMPARABLES ~ REGION+
+            ID_TIPO_VEHICULO+ID_COMPANIA_ASEGURADORA+
+            ID_CONDICION+INGRESO_FOSYGA+
+            SEGURIDAD_SOCIAL+CONTEO_OBJ_VIC_CAT+
+            CONTEO_OBJ_PLACA_CAT+CONTEO_OBJ_POLIZA_CAT+
+            PERTENECE_LISTA+RETARDO_CAT+
+            IGUALDAD_COND_TOM+NUM_VECES_PLACA+VIGENCIA, 
+        data = DT_f, method = "glm", family = "binomial", trControl = control)
+print(M1)
+```
+
+Los resultados con 10 y 15 plieges no mostraron un cambio importante que condujera a preferir tales valores en la especificación de la validación cruzada.
+
+La evaluación del resultado se realiza desde las metricas proporcionadas por la matriz de confusión:
+
+```{r echo=FALSE, warning=FALSE}
+# Predecir en el conjunto de datos (puedes usar otro conjunto si lo deseas)
+predicciones_prob = predict(M1, newdata = DT_f, type = "prob")[,2]
+pred_clas = ifelse(predicciones_prob > 0.5, 1, 0)
+pred_clas=as.factor(pred_clas)
+levels(pred_clas)=c("NO OBJETADOS","OBJETADOS")
+# Evaluar el rendimiento del modelo
+confusionMatrix(pred_clas, DT_f$OBJECIONES_COMPARABLES)
+```
+
+Tomando como clase positiva los NO OBJETADOS, la exactitud resulta adecuada con un 93.2% así como la sensibilidad que supera el 99%, sin embargo la espeificidad es del 20.2% indicando que la capacidad del modelo de detectar los verdaderos negativos (OBJETADOS) es menor de lo esperado.
+
+Adicionalmente se presenta la curva ROC que aporta información acerca de la calidad de la clasificación derivada del modelo, mostrando que es una clasificación util en relación a lo que seria una selección al azar, es decir que los resultados si permiten una separación de las dos categórias de manera importante.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+curva_roc=roc(DT_f$OBJECIONES_COMPARABLES,predicciones_prob)
+# Graficar la curva ROC
+
+C_roc=plot.roc(DT_f$OBJECIONES_COMPARABLES,predicciones_prob,main='Curva ROC',
+               percent=TRUE,ci=TRUE,print.auc=TRUE)
+CI_roc=ci.se(C_roc,specificities=seq(0,100,5))
+plot(CI_roc,type='shape',col='#009045')
+
+```
+
+Especificamente el modelo obtenido esta especificado mediante los siguientes coeficientes:
+
+```{r echo=FALSE, warning=FALSE}
+# 
+Rsl_tidy = tidy(M1$finalModel)
+Rsl_tidy[,-1]=round(Rsl_tidy[,-1],3)
+colnames(Rsl_tidy)=c('Término','Estimación','Error Std.','Estad.','Valor P')
+autofit(flextable(Rsl_tidy))
+```
